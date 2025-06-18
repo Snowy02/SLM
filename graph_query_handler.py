@@ -5,70 +5,47 @@ import time
 from langchain_community.graphs import Neo4jGraph
 from langchain.prompts import PromptTemplate
 from langchain_community.llms import Ollama
+from langchain.chains import GraphCypherQAChain
 from langchain_core.output_parsers import StrOutputParser
 
-# --- PROMPT TEMPLATES ---
-
-# 1. Router Prompt: Classifies the user's intent.
-ROUTER_TEMPLATE = """
-You are an expert at understanding user questions about codebases.
-Your task is to classify the user's question into one of two categories based on its intent:
-
-1. `cypher`: The user is asking to find, list, count, or locate entities. These questions can be answered by a direct database query.
-   Examples: "List all classes in the policyissuance repository.", "Which methods does the 'UserService' class have?", "Find repositories that depend on 'core-library'."
-
-2. `explain`: The user is asking for an explanation, summary, or description of a code entity's functionality. This requires retrieving the code and then summarizing it.
-   Examples: "Explain the functionality of the 'BillingProcessor' class.", "What does the 'AuthenticationService' do?", "Summarize the 'main' method in 'Program.cs'."
-
-<QUESTION>
-{question}
-</QUESTION>
-
-Category:
-"""
-
-# 2. Cypher Generation Prompt: Now includes instructions for explanation queries.
+# --- A SUPERIOR PROMPT TEMPLATE ---
+# This template is highly structured, using tags to guide the LLM.
+# This structure is critical for reducing latency and improving accuracy.
 CYPHER_GENERATION_TEMPLATE = """
-You are an expert Neo4j developer. Your task is to convert a user's question into a Cypher query based on the provided schema.
+You are an expert Neo4j developer, skilled at writing precise and efficient Cypher queries.
 
 <INSTRUCTIONS>
-1.  Base your query ONLY on the schema provided.
-2.  For repository or class names, use the `name` property (e.g., `WHERE r.name = 'policyissuance'`).
-3.  **IMPORTANT**: If the user's question is for an **explanation** of a class or method, you MUST retrieve its source code. The property is called `source`. For example: `RETURN c.name as name, c.source as source_code`.
-4.  Your response MUST be ONLY the Cypher query. Do not include any text, explanations, or backticks.
+1.  Your task is to convert a user's question in natural language into a syntactically correct Cypher query.
+2.  Base your query ONLY on the schema provided. Do not use any node labels or relationship types not listed in the schema.
+3.  Pay close attention to the user's question to extract key entities and relationships. For repository names or class names, use the `name` property in your `WHERE` clause (e.g., `WHERE r.name = 'policyissuance'`).
+4.  Your response MUST be ONLY the Cypher query. Do not include any introductory text, explanations, or markdown backticks.
 </INSTRUCTIONS>
 
 <SCHEMA>
 {schema}
 </SCHEMA>
 
+<EXAMPLES>
+{examples}
+</EXAMPLES>
+
 <QUESTION>
 {question}
 </QUESTION>
 
+{error_correction}
+
 Cypher Query:
 """
 
-# 3. Explanation Prompt: A new prompt dedicated to code summarization.
-EXPLANATION_TEMPLATE = """
-You are a senior software engineer and an expert at explaining complex code in simple terms.
-A user has asked a question about a class. You have been given the source code for that class.
-
-<INSTRUCTIONS>
-1.  Analyze the provided source code, including its properties, methods, and overall structure.
-2.  Based on the code, provide a clear, concise, and helpful explanation that directly answers the user's question.
-3.  Format your answer in Markdown for readability. Start with a high-level summary and then provide more detail if relevant (e.g., key responsibilities, important methods).
-</INSTRUCTIONS>
-
-<USER_QUESTION>
-{question}
-</USER_QUESTION>
-
-<SOURCE_CODE>
-{source_code}
-</SOURCE_CODE>
-
-Explanation:
+# This template is used for the self-correction mechanism
+ERROR_CORRECTION_TEMPLATE = """
+<CORRECTION>
+The previous query you generated failed.
+- **Failed Query:** `{cypher_query}`
+- **Database Error:** `{error_message}`
+- **Instructions:** Please analyze the error and the original question, then generate a new, corrected Cypher query.
+</CORRECTION>
 """
 
 
@@ -80,92 +57,104 @@ class GraphQueryHandler:
                 username=os.getenv("NEO4J_USERNAME", "neo4j"),
                 password=os.getenv("NEO4J_PASSWORD", "password")
             )
+            # Use a more specific query to get the schema structure
             self.concise_schema = self.get_concise_schema()
             self.llm = Ollama(model="devstral:24b", temperature=0)
-
-            # --- Define the Chains ---
-            self.router_chain = (
-                PromptTemplate.from_template(ROUTER_TEMPLATE) | self.llm | StrOutputParser()
-            )
+            
+            # Use a more direct chain, as we are building the prompt manually
             self.cypher_chain = (
-                PromptTemplate.from_template(CYPHER_GENERATION_TEMPLATE) | self.llm | StrOutputParser()
-            )
-            self.explanation_chain = (
-                PromptTemplate.from_template(EXPLANATION_TEMPLATE) | self.llm | StrOutputParser()
+                PromptTemplate.from_template(CYPHER_GENERATION_TEMPLATE)
+                | self.llm
+                | StrOutputParser()
             )
 
         except Exception as e:
             raise ConnectionError(f"Failed to initialize GraphQueryHandler: {e}")
 
     def get_concise_schema(self) -> str:
-        # (This function remains unchanged from the previous version)
+        """
+        Generates a concise, summary schema focused on node labels and relationships.
+        This is far more effective and token-efficient than the default schema dump.
+        """
         node_labels = self.graph.query("CALL db.labels() YIELD label RETURN label")
         relationships = self.graph.query("CALL db.relationshipTypes() YIELD relationshipType RETURN relationshipType")
+        
         schema_str = "Node Labels:\n" + "\n".join([f"- {row['label']}" for row in node_labels])
         schema_str += "\n\nRelationships:\n" + "\n".join([f"- {row['relationshipType']}" for row in relationships])
+        
         return schema_str
 
-    def run_query(self, question: str):
+    def run_query(self, question: str, max_retries: int = 2):
         """
-        Orchestrates the query process based on recognized intent.
+        Runs the natural language to Cypher conversion with a self-correction loop.
         """
         start_time = time.time()
-        
-        # --- Step 1: Classify Intent ---
-        intent = self.router_chain.invoke({"question": question}).strip().lower()
-        
-        intermediate_steps = [{"recognized_intent": intent}]
+        retries = 0
+        error_message = ""
+        generated_cypher = ""
+        intermediate_steps = []
 
-        # --- Step 2: Route to the appropriate logic ---
-        if intent == 'explain':
-            # --- Explanation Path ---
+        # We'll use your original examples, but format them better for the prompt.
+        examples = [
+            { "question": "Find all classes in the repository 'exampleRepo'.", "query": "MATCH (r:Repository {name: 'exampleRepo'})-[:HAS_CLASSES]->(c:Class) RETURN c.name AS ClassName, c.file_path AS FilePath" },
+            { "question": "Which repositories depend on the 'core-library' repository?", "query": "MATCH (r:Repository)-[:DEPENDS_ON]->(:Repository {name: 'core-library'}) RETURN r.name AS DependentRepository" },
+            { "question": "List all methods in the 'UserService' class.", "query": "MATCH (:Class {name: 'UserService'})-[:HAS_METHOD]->(m:Method) RETURN m.name AS MethodName" },
+            { "question": "What stored procedures does the 'BillingProcessor' class call?", "query": "MATCH (:Class {name: 'BillingProcessor'})-[:CALLS_SP]->(sp:StoredProcedure) RETURN sp.name AS StoredProcedure" }
+        ]
+        
+        # Format examples for injection into the prompt
+        example_text = "\n\n".join([f"Question: {ex['question']}\nCypher: {ex['query']}" for ex in examples])
+
+        while retries < max_retries:
+            
+            correction_prompt = ""
+            if error_message:
+                correction_prompt = ERROR_CORRECTION_TEMPLATE.format(
+                    cypher_query=generated_cypher,
+                    error_message=error_message
+                )
+
+            # Generate the Cypher query
             generated_cypher = self.cypher_chain.invoke({
                 "schema": self.concise_schema,
-                "question": question
+                "examples": example_text,
+                "question": question,
+                "error_correction": correction_prompt
             }).strip()
-            intermediate_steps.append({"generated_cypher": generated_cypher})
+
+            step_info = {
+                "attempt": retries + 1,
+                "cypher_query": generated_cypher
+            }
 
             try:
-                code_data = self.graph.query(generated_cypher)
-                if not code_data:
-                    return {"result": "I couldn't find the class you asked about. Please check the name and try again.", "intermediate_steps": intermediate_steps}
-
-                # Assuming the first result is the one we want to explain
-                source_code = code_data[0].get('source_code', '')
-                if not source_code:
-                     return {"result": f"I found the class '{code_data[0].get('name')}', but I couldn't find its source code to explain.", "intermediate_steps": intermediate_steps}
-
-                explanation = self.explanation_chain.invoke({
-                    "question": question,
-                    "source_code": source_code
-                })
-                intermediate_steps.append({"status": "Generated Explanation"})
+                # Execute the query
+                result = self.graph.query(generated_cypher)
+                end_time = time.time()
+                
+                step_info["status"] = "Success"
+                intermediate_steps.append(step_info)
                 
                 return {
-                    "result": explanation,
-                    "intermediate_steps": intermediate_steps,
-                    "duration_seconds": round(time.time() - start_time, 2)
-                }
-
-            except Exception as e:
-                return {"result": f"An error occurred while trying to generate an explanation: {e}", "intermediate_steps": intermediate_steps}
-
-        elif intent == 'cypher':
-            # --- Cypher Path (Lookup) ---
-            generated_cypher = self.cypher_chain.invoke({
-                "schema": self.concise_schema,
-                "question": question
-            }).strip()
-            intermediate_steps.append({"generated_cypher": generated_cypher})
-
-            try:
-                result = self.graph.query(generated_cypher)
-                return {
+                    "question": question,
                     "result": result,
                     "intermediate_steps": intermediate_steps,
-                    "duration_seconds": round(time.time() - start_time, 2)
+                    "duration_seconds": round(end_time - start_time, 2),
                 }
             except Exception as e:
-                 return {"result": f"The generated Cypher query failed: {e}. Query: {generated_cypher}", "intermediate_steps": intermediate_steps}
-        else:
-            return {"result": "I'm sorry, I'm not sure how to answer that question. I can find code entities or explain their functionality.", "intermediate_steps": intermediate_steps}
+                # This is the self-correction part
+                retries += 1
+                error_message = str(e)
+                
+                step_info["status"] = "Failed"
+                step_info["error"] = error_message
+                intermediate_steps.append(step_info)
+
+        # If all retries fail
+        end_time = time.time()
+        return {
+            "question": question,
+            "result": f"Failed to execute a valid query after {max_retries} attempts. Last error: {error_message}",
+            "intermediate_steps": intermediate_steps,
+            "duration_seconds": round(end_time - start_time, 2),
+        }
