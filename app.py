@@ -18,6 +18,7 @@ def get_query_handler():
         return GraphQueryHandler()
     except ConnectionError as e:
         st.error(f"**Failed to initialize connection:** {e}", icon="🚨")
+        st.warning("Please ensure Neo4j and Ollama are running and environment variables are set.")
         return None
 
 query_handler = get_query_handler()
@@ -26,12 +27,12 @@ if not query_handler:
 
 # --- UI Layout ---
 st.title("🧠 Codebase Knowledge Graph Explorer")
-st.markdown("Ask a question to find code (`List all classes in...`) or to understand it (`Explain the functionality of...`).")
+st.markdown("Ask a question about your codebase in natural language. The system will convert it to a Cypher query, execute it, and even try to self-correct if it makes a mistake.")
 
 # --- Natural Language Query Input ---
 question = st.text_area(
     "Enter your question here:",
-    "Explain the functionality of the 'BillingProcessor' class",
+    "What are the various classes defined in the repository policyissuance?",
     height=100
 )
 
@@ -39,7 +40,7 @@ if st.button("Run Query", type="primary", use_container_width=True):
     if not question.strip():
         st.warning("Please enter a question.")
     else:
-        with st.spinner("Analyzing question and querying knowledge base..."):
+        with st.spinner("Generating Cypher, executing, and analyzing results... This should be quick!"):
             st.session_state.query_result = query_handler.run_query(question)
 
 # --- Results Display ---
@@ -51,15 +52,18 @@ if 'query_result' in st.session_state and st.session_state.query_result:
 
     # Display the intermediate steps for transparency
     with st.expander("Show Query Journey", expanded=True):
-        if result_data.get('intermediate_steps'):
-            for step in result_data['intermediate_steps']:
-                key = list(step.keys())[0]
-                value = step[key]
-                st.write(f"**{key.replace('_', ' ').title()}:**")
-                if 'cypher' in key:
-                    st.code(value, language="cypher")
-                else:
-                    st.info(value)
+        st.markdown(f"**Original Question:**")
+        st.info(result_data['question'])
+        
+        for i, step in enumerate(result_data['intermediate_steps']):
+            st.markdown(f"---")
+            if step['status'] == 'Success':
+                st.markdown(f"#### ✅ Attempt {step['attempt']}: Success")
+                st.code(step['cypher_query'], language="cypher")
+            else:
+                st.markdown(f"#### ❌ Attempt {step['attempt']}: Failed")
+                st.code(step['cypher_query'], language="cypher")
+                st.error(f"**Error:** {step['error']}")
 
     # Display the final answer
     st.markdown("### Final Answer")
@@ -71,8 +75,8 @@ if 'query_result' in st.session_state and st.session_state.query_result:
         else:
             st.success("Query executed successfully but returned no results.")
     elif isinstance(final_answer, str):
-        # This will now display both explanations and error messages
-        st.markdown(final_answer) # Use markdown to render formatted explanations
+        # This will catch the error message if all retries failed
+        st.error(final_answer)
     else:
         st.json(final_answer)
 
