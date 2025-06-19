@@ -85,3 +85,4 @@ with st.sidebar:
     st.header("Graph Schema")
     st.info("A concise summary of the graph schema provided to the LLM.")
     st.code(query_handler.concise_schema, language='text')
+    
