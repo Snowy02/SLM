@@ -1,64 +1,3 @@
-Of course. As an expert in Gradio and Streamlit, I can guide you through this migration and integration process. It's a common and excellent architectural decision to unify disparate apps into a single, cohesive Gradio application.
-
-Let's break this down step-by-step.
-
-✅ 1. Analysis: Converting Streamlit (app.py) to Gradio
-
-First, we'll analyze the components and logic of your Streamlit app and map them to their Gradio equivalents.
-
-Streamlit Component/Concept	Gradio Equivalent	Analysis & Notes
-st.title, st.markdown	gr.Markdown()	Straightforward conversion. Gradio's Markdown supports HTML for advanced styling.
-st.text_area(...)	gr.Textbox(lines=5, ...)	gr.Textbox is the equivalent for multi-line text input.
-st.button(...)	gr.Button(...)	Both are core components. The event handling is different (on_click vs. .click()).
-with st.spinner(...)	Automatic on .click() / gr.Progress()	Gradio buttons show a loading animation by default. For more detailed progress, we'll use gr.Progress.
-st.write, st.info, st.error	gr.Markdown, gr.HTML, gr.Error	We can use Markdown for most text outputs. gr.Error is for throwing noticeable error popups.
-st.code(...)	gr.Code(...)	Direct one-to-one mapping for displaying code snippets.
-st.dataframe(...)	gr.Dataframe(...)	Direct one-to-one mapping for displaying Pandas DataFrames.
-st.expander(...)	gr.Accordion(...)	gr.Accordion is the Gradio component for creating collapsible sections.
-st.metric(...)	gr.Textbox(...) or gr.Markdown()	Gradio doesn't have a dedicated "metric" component, but this is easily replicated with a styled Textbox or Markdown inside a gr.Row.
-@st.cache_resource	Global variable instantiation	The simplest way to replicate resource caching in Gradio is to initialize the object (like your GraphQueryHandler) once at the start of the script. It will be shared across all user sessions.
-st.session_state	gr.State() or direct component output/input	Streamlit re-runs the entire script on each interaction, requiring session_state. Gradio is event-driven; data flows from outputs of one function to inputs of another, or can be stored explicitly in a hidden gr.State component if needed.
-
-The Core Logic Conversion:
-The main logic in app.py is triggered by a button click. This logic will be moved into a single Python function. This function will:
-
-Take the user's question as an input.
-
-Perform all the steps: identify_intent, run_query, extract_entities, etc.
-
-Instead of calling st.write or st.dataframe directly, it will return values for multiple Gradio output components.
-
-We will use gr.update(value=..., visible=True/False) to conditionally show the correct results (e.g., show the DataFrame for a dependency query, or show the code explanation for another).
-
-✅ 2. Integration Strategy: Combining with web.py
-
-Your current web.py uses a radio button ("I am new..." vs. "I know what I am doing") to show/hide different rows. This is a good start, but for separating two completely different user flows, a more robust UI structure is better.
-
-UI Structure Recommendation: gr.Tabs
-
-We will restructure your entire app to use a gr.Tabs layout.
-
-Tab 1: "Guided Wizard": This will contain your entire original web.py interface for new users.
-
-Tab 2: "Expert Query": This will contain the new interface converted from your Streamlit app.
-
-The radio button will no longer show/hide individual gr.Row components. Instead, it will switch the active tab, which is a much cleaner and more scalable user experience.
-
-✅ 3. How-To: Implementation Details
-
-Define a New Function for Expert Queries: We'll create handle_expert_query() that encapsulates all the logic from app.py.
-
-Trigger the Function: The "Run Query" button within the "Expert Query" tab will trigger this new function.
-
-Route Between Interfaces: We'll define a new navigation_tabs() function. The "Who are you?" radio button will call this function, which will simply return gr.update(selected=...) to change the visible tab in the gr.Tabs container.
-
-✅ 4. The Integrated Code
-
-Here is the fully integrated code. I have combined both apps, refactored the navigation to use tabs, and converted the Streamlit logic into a Gradio-compatible function. I also fixed a few minor bugs and inconsistencies from the original web.py to make it more robust.
-
-full_app.py (replaces both web.py and app.py)
-
-Generated python
 import gradio as gr
 import pandas as pd
 import json
@@ -392,4 +331,41 @@ with gr.Blocks(theme=custom_theme) as demo:
     # Event handlers for "Guided Wizard"
     repository_radio.change(repository_selected_by_user, inputs=repository_radio, outputs=[repository_action_row])
     repository_action.change(
-        repository_action_selected_
+        repository_action_selected_by_user,
+        inputs=[repository_radio, repository_action],
+        outputs=[list_class_row, dependencies_row] # Simplified output
+    )
+    classes_radio_group.change(
+        class_selected_by_user,
+        inputs=classes_radio_group,
+        outputs=[class_action_row, action_selected_text]
+    )
+    class_action_radio_group.change(
+        class_action_selected_by_user,
+        inputs=[repository_radio, classes_radio_group, class_action_radio_group],
+        outputs=[dependencies_row, method_row, html_code_output, method_checkbox_group, explain_code_row_btn]
+    )
+    explain_code_btn.click(
+        explain_code_button_handler,
+        inputs=[method_checkbox_group, repository_radio, classes_radio_group],
+        outputs=[code_explanation_output_row, code_output, explanation_output]
+    )
+
+    # Event handler for "Expert Query"
+    expert_run_btn.click(
+        handle_expert_query,
+        inputs=[expert_question],
+        # The outputs must be a list in the same order as the keys in the returned dict
+        outputs=[
+            expert_results_group,
+            expert_df_output,
+            expert_query_details_accordion,
+            expert_final_answer_md,
+            expert_code_explanation_row,
+            expert_code_output,
+            expert_explanation_output
+        ]
+    )
+
+# --- 5. LAUNCH THE APP ---
+demo.launch(debug=True)
