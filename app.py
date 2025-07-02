@@ -1,10 +1,10 @@
 import gradio as gr
 import pandas as pd
 import json
-from graph_query_handler1 import GraphQueryHandler # Assuming this is your correct handler file
+import html
+from graph_query_handler1 import GraphQueryHandler
 from data_Structures import Node
 from typing import Dict, List
-import html # For escaping HTML in code blocks
 
 # --- Global Setup ---
 custom_theme = gr.themes.Default(
@@ -25,45 +25,37 @@ title_html = """
 """
 
 # --- Utility Function to get the query handler ---
-# This is cached so it only runs once on startup
 @gr.cache_resource
 def get_query_handler():
     try:
         return GraphQueryHandler()
     except Exception as e:
         print(f"FATAL: Error connecting to Neo4j: {e}")
-        # This will show an error at the top of the Gradio app if connection fails
         gr.Error(f"**Failed to initiate connection to the graph database:** {e}")
         return None
 
 # --- Main Application Logic ---
 query_handler = get_query_handler()
 
-# If the handler fails to initialize, we build a simple error UI instead of crashing.
 if not query_handler:
     with gr.Blocks(theme=custom_theme) as demo:
         gr.HTML(title_html)
         gr.Error("Could not connect to the database. Please ensure the database is running and check the connection settings, then restart this application.")
     demo.launch()
-    # Stop the script if connection fails
     import sys
     sys.exit()
 
 # ==============================================================================
 # GRADIO UI AND LOGIC
-# All UI components and handlers are defined within this block
-# to solve the variable scope (NameError) issue.
 # ==============================================================================
 with gr.Blocks(theme=custom_theme) as demo:
     gr.HTML(title_html)
 
-    # ==============================================================================
-    # 1. DEFINE ALL UI COMPONENTS
-    # ==============================================================================
+    # ============================ 1. DEFINE ALL UI COMPONENTS ============================
     with gr.Sidebar():
         gr.Label("Graph Schema")
         gr.Markdown("A concise summary of the graph schema provided to the LLM.")
-        gr.Code(value=query_handler.concise_schema, language='text', interactive=False)
+        gr.Code(value=query_handler.concise_schema, language='plaintext', interactive=False)
 
     # --- Initial User Choice ---
     with gr.Row(visible=True) as main_page:
@@ -74,90 +66,93 @@ with gr.Blocks(theme=custom_theme) as demo:
         )
 
     # --- UI Components for "I AM NEW TO MARKETPLACE" (GUIDED MODE) ---
-    with gr.Blocks() as guided_mode_ui:
-        with gr.Row(visible=False) as repository_row:
-            query_for_repositories = "MATCH (n:Repository) RETURN DISTINCT n"
-            repository_nodes = query_handler.extract_result_for_query(query_for_repositories)
-            repositories = [x["n"]["name"] for x in repository_nodes] if repository_nodes else []
-            repository_radio = gr.Radio(repositories, label="Select Repository", interactive=True)
+    # NOTE: All these components are now siblings, not nested in a separate gr.Blocks
+    with gr.Row(visible=False) as repository_row:
+        query_for_repositories = "MATCH (n:Repository) RETURN DISTINCT n"
+        repository_nodes = query_handler.extract_result_for_query(query_for_repositories)
+        repositories = [x["n"]["name"] for x in repository_nodes] if repository_nodes else []
+        repository_radio = gr.Radio(repositories, label="Select Repository", interactive=True)
 
-        with gr.Row(visible=False) as repository_action_row:
-            REPOSITORY_ACTIONS = ["LIST CLASSES", "LIST DEPENDENCIES"]
-            repository_action = gr.Radio(REPOSITORY_ACTIONS, label="What would you like to do?", interactive=True)
+    with gr.Row(visible=False) as repository_action_row:
+        REPOSITORY_ACTIONS = ["LIST CLASSES", "LIST DEPENDENCIES"]
+        repository_action = gr.Radio(REPOSITORY_ACTIONS, label="What would you like to do?", interactive=True)
 
-        with gr.Row(visible=False) as list_class_row:
-            classes_radio_group = gr.Radio(choices=[], label="Select a Class", interactive=True)
+    with gr.Row(visible=False) as list_class_row:
+        classes_radio_group = gr.Radio(choices=[], label="Select a Class", interactive=True)
 
-        with gr.Row(visible=False) as list_dependencies_row:
-            gr.Markdown("Dependency features for the entire repository can be complex. Please select a specific class first to see its dependencies.")
+    with gr.Row(visible=False) as list_dependencies_row:
+        gr.Markdown("Dependency features for the entire repository can be complex. Please select a specific class first to see its dependencies.")
 
-        with gr.Row(visible=False) as class_action_row:
-            CLASS_ACTIONS = ['SHOW METHODS', 'SHOW DEPENDENCIES']
-            class_action_radio_group = gr.Radio(CLASS_ACTIONS, label="Select Action for the chosen class", interactive=True)
+    with gr.Row(visible=False) as class_action_row:
+        CLASS_ACTIONS = ['SHOW METHODS', 'SHOW DEPENDENCIES']
+        class_action_radio_group = gr.Radio(CLASS_ACTIONS, label="Select Action for the chosen class", interactive=True)
 
-        with gr.Row(visible=False) as dependencies_row:
-            html_code_output = gr.HTML(label="Class Dependencies")
+    with gr.Row(visible=False) as dependencies_row:
+        html_code_output = gr.HTML(label="Class Dependencies")
 
-        with gr.Row(visible=False) as method_row:
-            method_checkbox_group = gr.CheckboxGroup(choices=[], label="Select Methods to Explain")
-        
-        with gr.Row(visible=False) as explain_code_row:
-            explain_code_button = gr.Button(variant="primary", value="Explain Selected Code", interactive=True)
+    with gr.Row(visible=False) as method_row:
+        method_checkbox_group = gr.CheckboxGroup(choices=[], label="Select Methods to Explain")
+    
+    with gr.Row(visible=False) as explain_code_row:
+        explain_code_button = gr.Button(variant="primary", value="Explain Selected Code", interactive=True)
 
-        with gr.Tab(label="Code Explanation", visible=False) as code_explanation_tab:
-            with gr.Row():
-                with gr.Column(scale=1):
-                    code_output = gr.Code(label="Source Code", language="python", interactive=False)
-                with gr.Column(scale=1):
-                    explanation_output = gr.Markdown(label="LLM Explanation")
+    with gr.Tab(label="Code Explanation", visible=False) as code_explanation_tab:
+        with gr.Row():
+            code_output = gr.Code(label="Source Code", language="python", interactive=False, scale=1)
+            explanation_output = gr.Markdown(label="LLM Explanation", scale=1)
 
     # --- UI Components for "I KNOW WHAT I AM DOING" (EXPERT MODE) ---
-    with gr.Blocks() as expert_mode_ui:
-        with gr.Row(visible=False) as expert_mode_row:
-            with gr.Column():
-                gr.Markdown("## 🧠 Codebase Knowledge Graph Explorer (Expert Mode)")
-                gr.Markdown("Ask a question about your codebase in natural language. The system will convert it to a Cypher query, execute it, and return the answer.")
-                
-                expert_question_textbox = gr.Textbox(
-                    label="Enter your question here:",
-                    placeholder="e.g., 'What are the dependencies of the PaymentProcessor class?' or 'Explain the process_payment method'",
-                    lines=4,
-                    scale=7
-                )
-                
+    with gr.Row(visible=False) as expert_mode_row:
+        with gr.Column():
+            gr.Markdown("## 🧠 Codebase Knowledge Graph Explorer (Expert Mode)")
+            gr.Markdown("Ask a question about your codebase in natural language. The system will convert it to a Cypher query, execute it, and return the answer.")
+            
+            with gr.Row():
+                expert_question_textbox = gr.Textbox(label="Enter your question here:", placeholder="e.g., 'What are the dependencies of the PaymentProcessor class?'", lines=4, scale=7)
                 expert_run_button = gr.Button("Run Query", variant="primary", scale=1)
-                
-                with gr.Column(visible=False) as expert_results_col:
-                    expert_dataframe_output = gr.DataFrame(label="Query Result", visible=False, wrap=True)
-                    expert_html_output = gr.HTML(label="Query Details & Explanations")
+            
+            with gr.Column(visible=False) as expert_results_col:
+                expert_dataframe_output = gr.DataFrame(label="Query Result", visible=False, wrap=True)
+                expert_html_output = gr.HTML(label="Query Details & Explanations")
+    
+    # --- Group components for easier visibility control ---
+    guided_mode_components = [
+        repository_row, repository_action_row, list_class_row, list_dependencies_row,
+        class_action_row, dependencies_row, method_row, explain_code_row, code_explanation_tab
+    ]
+    expert_mode_components = [expert_mode_row]
 
 
-    # ==============================================================================
-    # 2. DEFINE ALL HANDLER FUNCTIONS
-    # These functions now have access to the UI components defined above.
-    # ==============================================================================
-
+    # ============================ 2. DEFINE ALL HANDLER FUNCTIONS ============================
+    
     # --- Navigation Handler ---
     def navigation(option):
-        is_newbie = (option == "I am new to Marketplace")
-        is_expert = (option == "I know what I am doing")
-        
-        # This dictionary maps each component to its desired visibility state
-        return {
-            main_page: gr.update(visible=False),
-            guided_mode_ui: gr.update(visible=is_newbie),
-            expert_mode_ui: gr.update(visible=is_expert),
-            # Also reset visibility of children when switching
-            repository_row: gr.update(visible=is_newbie),
-            expert_mode_row: gr.update(visible=is_expert)
-        }
+        updates = {}
+        # Always hide the main choice page after a selection is made
+        updates[main_page] = gr.update(visible=False)
 
-    # --- Guided Mode Handlers ---
-    def repository_selected_by_user(selected_option):
-        return gr.update(visible=True)
+        if option == "I am new to Marketplace":
+            # Show the first step of the guided tour
+            updates[repository_row] = gr.update(visible=True)
+            # Hide all other guided components and all expert components
+            for comp in guided_mode_components[1:] + expert_mode_components:
+                updates[comp] = gr.update(visible=False)
+        
+        elif option == "I know what I am doing":
+            # Show the expert mode row
+            updates[expert_mode_row] = gr.update(visible=True)
+            # Hide all guided components
+            for comp in guided_mode_components:
+                updates[comp] = gr.update(visible=False)
+        
+        return updates
+
+    # --- Guided Mode Handlers (Unchanged) ---
+    def repository_selected_by_user():
+        return gr.update(visible=True, value=None) 
 
     def class_selected_by_user():
-        return gr.update(visible=True)
+        return gr.update(visible=True, value=None)
 
     def repository_action_selected_by_user(repository, action):
         if action == "LIST CLASSES":
@@ -211,7 +206,7 @@ with gr.Blocks(theme=custom_theme) as demo:
             gr.Error("Could not retrieve source code for the selected method.")
             return gr.update(visible=False), None, None
 
-    # --- Expert Mode Handler ---
+    # --- Expert Mode Handler (Unchanged) ---
     def handle_expert_query(question, progress=gr.Progress(track_tqdm=True)):
         if not question or not question.strip():
             gr.Warning("Please enter a question before running the query.")
@@ -223,10 +218,10 @@ with gr.Blocks(theme=custom_theme) as demo:
             response_json = json.loads(response)
         except (json.JSONDecodeError, ValueError) as e:
             gr.Error(f"Failed to parse response from the language model: {e}")
-            error_html = f"<p style='color:red;'>Error: Could not understand the model's response. Details: {e}</p>"
-            return gr.update(visible=True), None, error_html
+            error_html = f"<p style='color:red;'>Error: Could not understand the model's response. Details: {html.escape(str(e))}</p>"
+            return gr.update(visible=True), gr.update(visible=False), error_html
 
-        intent = response_json.get("intent", "entity") # Default to entity explanation
+        intent = response_json.get("intent", "entity")
         
         if intent == "dependency":
             progress(0.3, desc="Generating & running Cypher query...")
@@ -239,13 +234,16 @@ with gr.Blocks(theme=custom_theme) as demo:
                 intermediate_html += f"<pre><code class='language-cypher'>{html.escape(step['cypher_query'])}</code></pre>"
                 if step['status'] != 'Success':
                     intermediate_html += f"<p style='color:red;'><b>Error:</b> {html.escape(str(step['error']))}</p>"
-
+            
             final_answer = result_data.get("result")
+            df_update = gr.update(visible=False, value=None)
             if isinstance(final_answer, list) and final_answer:
-                return gr.update(visible=True), pd.DataFrame(final_answer), intermediate_html
+                df_update = pd.DataFrame(final_answer)
             else:
                 intermediate_html += "<hr><b>Final Result:</b><p>Query executed successfully but returned no results.</p>"
-                return gr.update(visible=True), gr.update(visible=False, value=None), intermediate_html
+            
+            return gr.update(visible=True), df_update, intermediate_html
+        
         else:
             progress(0.3, desc="Extracting entities...")
             entities_str = query_handler.extract_entities(question)
@@ -264,65 +262,32 @@ with gr.Blocks(theme=custom_theme) as demo:
                     if 'source' in node and 'name' in node:
                         code_explanation = query_handler.explain_code(node["source"])
                         escaped_source = html.escape(node["source"])
-                        explanation_html += f"<hr><h4>Explanation for: <code>{node['name']}</code></h4>"
+                        explanation_html += f"<hr><h4>Explanation for: <code>{html.escape(node['name'])}</code></h4>"
                         explanation_html += f"<pre><code>{escaped_source}</code></pre>"
                         explanation_html += f"<div>{code_explanation}</div>"
             
             return gr.update(visible=True), gr.update(visible=False, value=None), explanation_html
+
+    # ============================ 3. DEFINE ALL EVENT LISTENERS ============================
     
-
-    # ==============================================================================
-    # 3. DEFINE ALL EVENT LISTENERS
-    # ==============================================================================
-
     # --- Main Navigation Event ---
-    # When user option changes, call the navigation handler.
-    # The handler returns a dictionary to update multiple components.
+    all_components = [main_page] + guided_mode_components + expert_mode_components
     user_option.change(
         fn=navigation,
         inputs=user_option,
-        outputs=[main_page, guided_mode_ui, expert_mode_ui, repository_row, expert_mode_row]
+        outputs=all_components
     )
 
     # --- Guided Mode Events ---
-    repository_radio.change(
-        fn=repository_selected_by_user,
-        inputs=repository_radio,
-        outputs=[repository_action_row]
-    )
-    repository_action.change(
-        fn=repository_action_selected_by_user,
-        inputs=[repository_radio, repository_action],
-        outputs=[classes_radio_group, list_dependencies_row]
-    )
-    classes_radio_group.change(
-        fn=class_selected_by_user,
-        inputs=None,
-        outputs=[class_action_row]
-    )
-    class_action_radio_group.change(
-        fn=class_action_selected_by_user,
-        inputs=[repository_radio, classes_radio_group, class_action_radio_group],
-        outputs=[dependencies_row, method_row, html_code_output, method_checkbox_group, explain_code_row]
-    )
-    explain_code_button.click(
-        fn=explain_code_button_handler,
-        inputs=[method_checkbox_group, classes_radio_group],
-        outputs=[code_explanation_tab, code_output, explanation_output]
-    )
+    repository_radio.change(fn=repository_selected_by_user, inputs=None, outputs=[repository_action_row])
+    repository_action.change(fn=repository_action_selected_by_user, inputs=[repository_radio, repository_action], outputs=[list_class_row, list_dependencies_row])
+    classes_radio_group.change(fn=class_selected_by_user, inputs=None, outputs=[class_action_row])
+    class_action_radio_group.change(fn=class_action_selected_by_user, inputs=[repository_radio, classes_radio_group, class_action_radio_group], outputs=[dependencies_row, method_row, html_code_output, method_checkbox_group, explain_code_row])
+    explain_code_button.click(fn=explain_code_button_handler, inputs=[method_checkbox_group, classes_radio_group], outputs=[code_explanation_tab, code_output, explanation_output])
 
-    # --- Expert Mode Event ---
-    # Use .submit() to allow Enter key in textbox to trigger the event
-    expert_question_textbox.submit(
-        fn=handle_expert_query,
-        inputs=[expert_question_textbox],
-        outputs=[expert_results_col, expert_dataframe_output, expert_html_output]
-    )
-    expert_run_button.click(
-        fn=handle_expert_query,
-        inputs=[expert_question_textbox],
-        outputs=[expert_results_col, expert_dataframe_output, expert_html_output]
-    )
+    # --- Expert Mode Events ---
+    expert_question_textbox.submit(fn=handle_expert_query, inputs=[expert_question_textbox], outputs=[expert_results_col, expert_dataframe_output, expert_html_output])
+    expert_run_button.click(fn=handle_expert_query, inputs=[expert_question_textbox], outputs=[expert_results_col, expert_dataframe_output, expert_html_output])
 
 # --- Launch the application ---
 demo.launch(debug=True)
