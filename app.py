@@ -1,371 +1,347 @@
-import gradio as gr
-import pandas as pd
-import json
-from graph_query_handler1 import GraphQueryHandler # Assuming this is your handler
-from data_Structures import Node # Assuming this is your data structure
-from typing import Dict, List, Tuple
+Of course. Your manager's feedback is excellent and points to a crucial aspect of prompt engineering for graph databases. The LLM needs to know not just what nodes and relationships exist, but how they connect. Providing explicit relationship patterns is the key to improving query accuracy.
 
-# --- 1. SETUP AND INITIALIZATION ---
-# This section handles setup, similar to the top of your Streamlit app.
+I will make the one necessary change to your graph_query_handler.py file to address this. The change will be exclusively inside the get_concise_schema method, as you requested.
 
-# Initialize the theme
-custom_theme = gr.themes.Default(
-    primary_hue="blue",
-    secondary_hue="green",
-    neutral_hue="orange",
-    text_size="sm",
-    font="Comic Sans MS"
-)
+The Problem
 
-# App Title HTML
-title_html = """
-<div style="text-align: center; margin-top: 20px;">
-    <h1 style="background: linear-gradient(to right,red,orange,yellow,green,blue,indigo,violet); -webkit-background-clip: text; color:transparent;">
-        Codebase Analytica
-    </h1>
-    <p style="font-size: 18px; color: gray;">Decoding Complexity, One Line at a Time</p>
-</div>
+Your current get_concise_schema method lists node labels and relationship types separately.
+Current Schema Output:
+
+Generated code
+Node Labels:
+- Repository
+- Class
+- Controller
+Relationships:
+- HAS_CLASSES
+- HAS_ROUTES
+
+
+The LLM has to guess that the relationship is (Repository)-[:HAS_CLASSES]->(Class) and not, for example, (Controller)-[:HAS_CLASSES]->(Repository).
+
+The Solution
+
+We will modify get_concise_schema to query the database's schema visualization capabilities. This allows us to generate a list of explicit connection patterns, which is exactly what the LLM needs to see.
+
+New Schema Output:
+
+Generated code
+Node Labels:
+- Repository
+- Class
+- Controller
+
+Relationship Patterns:
+- (Repository)-[:HAS_CLASSES]->(Class)
+- (Repository)-[:HAS_ROUTES]->(Controller)
+... and so on
+IGNORE_WHEN_COPYING_START
+content_copy
+download
+Use code with caution.
+IGNORE_WHEN_COPYING_END
+
+This removes all guesswork for the LLM and will significantly improve the quality of the generated Cypher queries.
+
+Modified graph_query_handler.py
+
+Here is your file with the single, targeted change in the get_concise_schema method. No other part of the code has been altered.
+
+Generated python
+import time
+# Corrected typo in langchain imports
+from langchain_community.graphs import Neo4jGraph
+from langchain.prompts import PromptTemplate
+from langchain_community.llms import Ollama
+from langchain.chains import GraphCypherQAChain
+from langchain_core.output_parsers import StrOutputParser
+from typing import List,Dict
+from data_structures import Node
+from enitites import entity
+
+
+#prompt template specifically written for cypher generation
+CYPHER_GENERATION_TEMPLATE="""
+You are an expert Neo4j developer,skilled at writing precise and efficient Cypher queries.
+
+<INSTRUCTUIONS>
+1. Your task is to convert a user's question in natural language into a syntactically correct Cypher query.
+2. Base your query ONLY on the schema provided. Do not use any node labels or relationship types not listed in the schema.
+3. Pay close attention to the user's question to extract key entities and relationships. For repository names or class names, use the `name` property in your `WHERE` clause (e.g, `WHERE r.name = 'policyissuance'`).
+4. Your response MUST be ONLY the Cypher query. Do not include any introduction text,explanations,or markdown backticks.
+</INSTRUCTUIONS>
+
+<SCHEMA>
+{schema}
+</SCHEMA>
+
+<EXAMPLES>
+{examples}
+</EXAMPLES>
+
+<QUESTION>
+{question}
+</QUESTION>
+
+{error_correction}
+
+Cypher Query:
 """
 
-# Initialize the graph handler once (replaces st.cache_resource)
-def get_query_handler():
-    try:
-        return GraphQueryHandler()
-    except ConnectionError as e:
-        print(f"Error: {e}")
-        # In a real app, you might want to handle this more gracefully
-        # For now, we'll raise an error that Gradio can display.
-        raise gr.Error(f"**Failed to connect to Neo4j:** {e}. Please ensure the database is running.")
-    return None
+#self-correction mechanism if the query generation has failed previously
+ERROR_CORRECTION_TEMPLATE="""
+<CORRECTION>
+The previous query you generated failed.
+- **Failed Query:** `{cypher_query}`
+- **Database Error:** `{error_message}`
+- **Instructions:** Please analyze the error and the original question, then generate, then generate a new, correct Cypher query.
+</CORRECTION>
+"""
 
-query_handler = get_query_handler()
-# If the handler fails to initialize, the app will stop here with the gr.Error message.
+CODE_EXPLANATION_TEMPLATE="""
+You are an expert dotnetcore & C# assistant. Given a code, you will explain each line of code line by line. Use a markdown for output.
 
+Ensure each line of code is explained.
 
-# --- 2. LOGIC FUNCTIONS ---
-# This section contains all the backend logic for both the Guided and Expert flows.
+**code to explain is**
+`{code}`
 
-# --- Logic for "Guided Wizard" Tab (from original web.py) ---
+"""
 
-def repository_selected_by_user(selected_repo):
-    # When a repository is selected, show the next set of actions.
-    if selected_repo:
-        return gr.update(visible=True)
-    return gr.update(visible=False)
+INTENT_GENERATION_TEMPLATE="""
+You are an expert natural lnaguage analyzer. You ca identify the intent of a user based on the question. You should respond in JSON format. The format of
+response should be a json. The key should be called intent. The value can be either depndency or explantion.
 
-def repository_action_selected_by_user(repository, action):
-    # Based on the action for a repository, show the appropriate UI.
-    if action == "LIST CLASSES":
-        query = f"MATCH (n:Repository {{name: '{repository}'}})-[:HAS_CLASSES]->(c:Class) RETURN c"
-        result = query_handler.extract_result_for_query(query)
-        classes = [x["c"]["name"] for x in result]
-        # Show the class list and update its choices
-        return gr.update(visible=True, choices=classes), gr.update(visible=False)
-    elif action == "CODE EXPLANATION":
-        # This seems to be a placeholder in the original code, but we enable the class list view
-        return gr.update(visible=True, choices=[]), gr.update(visible=False)
-    elif action == "LIST DEPENDENCIES":
-        # Show the dependency view
-        return gr.update(visible=False), gr.update(visible=True)
-    return gr.update(visible=False), gr.update(visible=False)
+<examples>
+question: I am updating the DataStructure AccountRenewalSessionData. What is the potential impact
+The json value should be dependency
 
-def class_selected_by_user(selected_class):
-    # When a class is selected, show the actions for that class.
-    if selected_class:
-        return gr.update(visible=True), selected_class
-    return gr.update(visible=False), ""
+question: Can you explain the code for method GetCustomer?
+The json value should be explanation
 
-def class_action_selected_by_user(repository, class_name, action, progress=gr.Progress()):
-    progress(0, desc="Starting...")
-    if not class_name:
-        gr.Warning("Please select a class first!")
-        return gr.update(visible=False), gr.update(visible=False), gr.update(), gr.update(), gr.update(visible=False)
-        
-    if action == "SHOW DEPENDENCIES":
-        progress(0.1, desc="Querying dependencies...")
-        query = f'MATCH (n:Repository {{name: "{repository}"}})-[:HAS_CLASSES]->(c:Class {{name : "{class_name}"}})-[:HAS_METHOD]->(m:METHOD)-[:CALLS_METHOD]->(target:Method) RETURN c.name, m.name, target.name'
-        result = query_handler.extract_result_for_query(query)
-        progress(0.8, desc="Generating HTML view...")
-        html_code = query_handler.generate_html(query=query, output=result)
-        progress(1, desc="Done.")
-        return gr.update(visible=True), gr.update(visible=False), gr.update(value=html_code), None, gr.update(visible=False)
-    
-    elif action == "SHOW METHODS":
-        progress(0.1, desc="Querying methods...")
-        query = f'MATCH (n:Repository {{name: "{repository}"}})-[:HAS_CLASSES]->(c:Class {{name : "{class_name}"}})-[:HAS_METHOD]->(m:METHOD) RETURN m.name'
-        result = query_handler.extract_result_for_query(query)
-        methods = [x["m.name"] for x in result]
-        progress(1, desc="Done.")
-        return gr.update(visible=False), gr.update(visible=True), None, gr.update(choices=methods), gr.update(visible=True)
-    
-    return gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
+question: I cannot understand thecode for class CustomerController?
+The json value should be explanation
+
+question: I am working on customer repository. I will change method GetCustomer. Qhat are the dependent classes and methods.
+The json value should be dependency
+
+</examples>
+**user question is** `{query}`
+
+**your response is**
+"""
+
+HTML_TABLE_GENERATOR_TEMPLATE="""
+You are an expert HTML code generator assistant. Given a output of Neo4j query, you will generate a data table. Generate the html for the given output. Do not provide any explanation or context, respond with only relevant HTML code. Do not generate the Doctype declaration, html element, head section or body section. Just generate the table section.
+Any styling should be part of the table, row or cell tag. Generate the table for entire output provided.
+
+For more context, the neo4j query was {query}
+
+The schema in neo4j is {schema}
+
+**output** {output}
+
+The html returned is:
+
+"""
+
+EXTRACT_ENTITY_TEMPLATE="""
+You are an expert assistant that can identify the name of repository, class, methods, controllers, data structures etc from the user question.
+
+This is the list of entity that are available in the system `{entity}`
+
+Your job is to perform a exact match with the entity provided and extract entities listed in user question. If exact match returns zero results, the 
+perform fuzzy match and provide top 3 match.
+
+**user question is** `{question}`
+
+Respond with the entities seperated by coma
+"""
 
 
-def explain_code_button_handler(selected_methods, repository, class_name):
-    if not selected_methods:
-        gr.Warning("Please select at least one method to explain.")
-        return gr.update(visible=False), gr.update(), gr.update()
-        
-    # We will explain the first selected method for this example
-    method_to_explain = selected_methods[0]
-    
-    query = f'MATCH (n:Repository {{name: "{repository}"}})-[:HAS_CLASSES]->(c:Class {{name: "{class_name}"}})-[:HAS_METHOD]->(m:METHOD {{name: "{method_to_explain}"}}) RETURN m.source'
-    result = query_handler.extract_result_for_query(query)
-
-    if result and "m.source" in result[0]:
-        source_code = result[0]["m.source"]
-        code_explanation = query_handler.explain_code(source_code)
-        return gr.update(visible=True), gr.update(value=source_code), gr.update(value=code_explanation)
-    else:
-        gr.Error("Could not retrieve source code for the selected method.")
-        return gr.update(visible=False), gr.update(), gr.update()
-
-
-# --- Logic for "Expert Query" Tab (Converted from app.py) ---
-
-def handle_expert_query(question, progress=gr.Progress(track_tqdm=True)):
-    """
-    This function encapsulates the entire logic from the Streamlit app.
-    It takes a question and returns updates for all relevant Gradio components.
-    """
-    if not question.strip():
-        gr.Warning("Please enter a question.")
-        return {
-            # Return updates to clear all fields and keep them hidden
-            expert_results_group: gr.update(visible=False),
-            expert_df_output: None,
-            expert_query_details_accordion: gr.update(visible=False),
-            expert_final_answer_md: None,
-            expert_code_explanation_row: gr.update(visible=False),
-            expert_code_output: None,
-            expert_explanation_output: None
-        }
-
-    progress(0.1, desc="Identifying intent...")
-    response = query_handler.identify_intent(question)
-    
-    try:
-        response_json = json.loads(response)
-        intent = response_json.get("intent")
-    except (json.JSONDecodeError, TypeError):
-        intent = "unknown" # Fallback if intent is not clear
-
-    # Initialize all outputs to be hidden
-    df_update = gr.update(visible=False)
-    accordion_update = gr.update(visible=False)
-    final_answer_update = gr.update(visible=False)
-    code_exp_update = gr.update(visible=False)
-    
-    if intent == "dependency":
-        progress(0.3, desc="Running dependency query...")
-        result_data = query_handler.run_query(question)
-        
-        # Prepare intermediate steps for display
-        details_md = f"**Original Question:**\n> {result_data['question']}\n\n"
-        for i, step in enumerate(result_data['intermediate_steps']):
-            status_emoji = "✅" if step['status'] == 'Success' else "❌"
-            details_md += f"---\n#### {status_emoji} Attempt {step['attempt']}: {step['status']}\n"
-            details_md += f"```cypher\n{step['cypher_query']}\n```\n"
-            if step['status'] != 'Success':
-                details_md += f"**Error:**\n> {step['error']}\n"
-        
-        accordion_update = gr.update(value=details_md, visible=True)
-
-        final_answer = result_data.get("result")
-        if isinstance(final_answer, list) and len(final_answer) > 0:
-            df_update = gr.update(value=pd.DataFrame(final_answer), visible=True)
-        elif isinstance(final_answer, list): # Empty list
-             final_answer_update = gr.update(value="*Query executed successfully but returned no results.*", visible=True)
-        else: # Error string
-             final_answer_update = gr.update(value=f"**An error occurred:**\n\n{final_answer}", visible=True)
-
-    else: # Fallback to entity extraction and code explanation
-        progress(0.3, desc="Extracting entities...")
-        entities_str = query_handler.extract_entities(question)
-        entities_arr = [e.strip() for e in entities_str.split(',')]
-        
-        progress(0.5, desc="Querying graph for entities...")
-        query = f"WITH {json.dumps(entities_arr)} AS names MATCH (n) WHERE n.name IN names RETURN n"
-        result = query_handler.extract_result_for_query(query=query)
-        
-        # Aggregate results for display
-        code_output_val = ""
-        explanation_output_val = ""
-        
-        if not result:
-            explanation_output_val = "**No entities found matching your query.**"
-        
-        for item in result:
-            node = item["n"]
-            if 'source' in node:
-                progress(0.7, desc=f"Explaining code for {node.get('name', 'node')}...")
-                source_code = node["source"]
-                code_explanation = query_handler.explain_code(source_code)
-                
-                code_output_val += f"# Source for: {node.get('name', 'Unknown')}\n\n{source_code}\n\n"
-                explanation_output_val += f"### Explanation for: {node.get('name', 'Unknown')}\n\n{code_explanation}\n\n---\n\n"
-
-        if code_output_val:
-            code_exp_update = gr.update(visible=True)
-        else: # Handle case where entities were found but none had source code
-            explanation_output_val = "**Found matching entities, but none had associated source code to display.**"
-
-
-    progress(1, "Done.")
-    # Return a dictionary for clarity, mapping components to their new state.
-    # Gradio requires returning a tuple in the correct order.
-    return {
-        expert_results_group: gr.update(visible=True),
-        expert_df_output: df_update,
-        expert_query_details_accordion: accordion_update,
-        expert_final_answer_md: final_answer_update,
-        expert_code_explanation_row: code_exp_update,
-        expert_code_output: gr.update(value=code_output_val),
-        expert_explanation_output: gr.update(value=explanation_output_val)
-    }
-
-
-# --- 3. UI DEFINITION using gr.Blocks ---
-
-with gr.Blocks(theme=custom_theme) as demo:
-    gr.HTML(title_html)
-
-    # --- Main Navigation ---
-    with gr.Row():
-        # This radio button now controls which Tab is active
-        user_option = gr.Radio(
-            choices=["I am new to Marketplace", "I know what I am doing"],
-            interactive=True,
-            label="Who are you?"
-        )
-
-    # --- Tabbed Interface for Different User Flows ---
-    with gr.Tabs() as main_tabs:
-        # --- TAB 1: GUIDED WIZARD (Original web.py UI) ---
-        with gr.Tab("Guided Wizard", id=0):
-            with gr.Row() as repository_row:
-                query_for_repositories = "MATCH (n:Repository) RETURN DISTINCT n.name"
-                repo_names = [r['n.name'] for r in query_handler.extract_result_for_query(query_for_repositories)]
-                repository_radio = gr.Radio(repo_names, label="Select Repository", interactive=True)
-            
-            with gr.Row(visible=False) as repository_action_row:
-                repository_action = gr.Radio(
-                    ["LIST CLASSES", "CODE EXPLANATION", "LIST DEPENDENCIES"], 
-                    label="What do you want to do?", 
-                    interactive=True
+class GraphQueryHandler:
+    graph=None
+    concise_schema=None
+    llm=None
+    cypher_chain=None
+    def __init__(self):
+        if self.graph==None and self.concise_schema==None and self.llm==None and self.cypher_chain==None:
+            try:
+                self.graph = Neo4jGraph(
+                    url="bolt://nausd-wapp0013.aceins.com:7687",
+                    username="neo4j",
+                    password="password"
                 )
-
-            with gr.Row(visible=False) as list_class_row:
-                classes_radio_group = gr.Radio([], label="Select a Class", interactive=True)
-            
-            with gr.Row(visible=False) as class_action_row:
-                class_action_radio_group = gr.Radio(
-                    ['SHOW METHODS', 'SHOW DEPENDENCIES'], 
-                    label="Select Action for this Class", 
-                    interactive=True
+                self.concise_schema = self.get_concise_schema()
+                self.llm = Ollama(model="devstral:24b",base_url="http://nausd-wapp021.aceins.com:11434", temperature=0)
+                self.cypher_chain = (
+                    PromptTemplate.from_template(CYPHER_GENERATION_TEMPLATE)
+                    | self.llm
+                    | StrOutputParser()
                 )
-                action_selected_text = gr.Textbox(label="You selected", interactive=False) # Helper to store selected class
+            except Exception as e:
+                raise ConnectionError(f"Failed to initialize GraphQueryHandler: {e}")
+    def extract_result_for_query(self,query)->str:
+        return self.graph.query(query)
+    
+    ### MODIFIED METHOD ###
+    def get_concise_schema(self) -> str:
+        """
+        Generates a concise, summary schema focused on node labels and explicit 
+        relationship patterns to guide the LLM effectively.
+        """
+        # Fetch all unique node labels
+        node_labels_query = "CALL db.labels() YIELD label RETURN label"
+        node_labels_result = self.graph.query(node_labels_query)
+        node_labels = [row['label'] for row in node_labels_result]
+        
+        # Fetch all relationship patterns
+        schema_query = "CALL db.schema.visualization()"
+        schema_result = self.graph.query(schema_query)
+        
+        # The result of the visualization query is a list containing one dictionary
+        if not schema_result:
+            return "Could not retrieve schema."
 
-            # Outputs for Guided Wizard
-            with gr.Row(visible=False) as dependencies_row:
-                html_code_output = gr.HTML()
-            
-            with gr.Row(visible=False) as method_row:
-                method_checkbox_group = gr.CheckboxGroup(choices=[], label="Select Methods to Explain")
-            
-            with gr.Row(visible=False) as explain_code_row_btn:
-                explain_code_btn = gr.Button(variant="primary", value="Explain Selected Code")
+        relationships = schema_result[0]['relationships']
+        
+        # Create a mapping from internal node ID to its primary label
+        nodes = schema_result[0]['nodes']
+        id_to_label = {node['id']: node['labels'][0] for node in nodes}
 
-            with gr.TabbedInterface(
-                [gr.Code(label="Code"), gr.Markdown(label="Explanation")],
-                tab_names=["Code", "Explanation"]
-            ) as code_explanation_tab:
-                # This doesn't need to be a component itself, but a container.
-                # Let's redefine the output components directly.
-                pass # Placeholder
-            
-            with gr.Row(visible=False) as code_explanation_output_row:
-                 code_output = gr.Code(label="Source Code")
-                 explanation_output = gr.Markdown(label="Code Explanation")
+        # Use a set to store unique relationship patterns
+        relationship_patterns = set()
+        for rel in relationships:
+            start_node_label = id_to_label.get(rel['startNode'], 'Unknown')
+            end_node_label = id_to_label.get(rel['endNode'], 'Unknown')
+            rel_type = rel['type']
+            pattern = f"({start_node_label})-[:{rel_type}]->({end_node_label})"
+            relationship_patterns.add(pattern)
 
+        # Build the final schema string
+        schema_str = "Node Labels:\n" + "- " + "\n- ".join(sorted(node_labels))
+        schema_str += "\n\nRelationship Patterns:\n" + "- " + "\n- ".join(sorted(list(relationship_patterns)))
+        
+        return schema_str
+    ### END OF MODIFIED METHOD ###
 
-        # --- TAB 2: EXPERT QUERY (Converted Streamlit UI) ---
-        with gr.Tab("Expert Query", id=1):
-            with gr.Column():
-                gr.Markdown("### 🧠 Codebase Knowledge Graph Explorer\nAsk a question about your codebase in natural language. The system will convert it to a Cypher query and execute it.")
-                expert_question = gr.Textbox(
-                    label="Enter your question here:",
-                    placeholder="e.g., 'What are the dependencies of the PaymentProcessor class?' or 'Show me the code for the handle_payment method'",
-                    lines=4
-                )
-                expert_run_btn = gr.Button("Run Query", variant="primary")
-            
-            # This group contains all possible results and will be shown/hidden together
-            with gr.Column(visible=False) as expert_results_group:
-                gr.Markdown("--- \n## Results")
-                
-                # For dependency results
-                expert_df_output = gr.DataFrame(label="Query Results", visible=False)
-                with gr.Accordion("Show Query Details", open=False, visible=False) as expert_query_details_accordion:
-                    expert_query_details_md = gr.Markdown()
-
-                # For simple text/error answers
-                expert_final_answer_md = gr.Markdown(visible=False)
-                
-                # For code explanation results
-                with gr.Row(visible=False) as expert_code_explanation_row:
-                    expert_code_output = gr.Code(label="Retrieved Source Code", language='python')
-                    expert_explanation_output = gr.Markdown(label="AI-Generated Explanation")
-
-    # --- 4. EVENT HANDLING ---
-
-    # Navigation logic to switch between tabs
-    def navigation_tabs(option):
-        if option == "I am new to Marketplace":
-            return gr.update(selected=0)
-        elif option == "I know what I am doing":
-            return gr.update(selected=1)
-
-    user_option.change(navigation_tabs, inputs=user_option, outputs=main_tabs)
-
-    # Event handlers for "Guided Wizard"
-    repository_radio.change(repository_selected_by_user, inputs=repository_radio, outputs=[repository_action_row])
-    repository_action.change(
-        repository_action_selected_by_user,
-        inputs=[repository_radio, repository_action],
-        outputs=[list_class_row, dependencies_row] # Simplified output
-    )
-    classes_radio_group.change(
-        class_selected_by_user,
-        inputs=classes_radio_group,
-        outputs=[class_action_row, action_selected_text]
-    )
-    class_action_radio_group.change(
-        class_action_selected_by_user,
-        inputs=[repository_radio, classes_radio_group, class_action_radio_group],
-        outputs=[dependencies_row, method_row, html_code_output, method_checkbox_group, explain_code_row_btn]
-    )
-    explain_code_btn.click(
-        explain_code_button_handler,
-        inputs=[method_checkbox_group, repository_radio, classes_radio_group],
-        outputs=[code_explanation_output_row, code_output, explanation_output]
-    )
-
-    # Event handler for "Expert Query"
-    expert_run_btn.click(
-        handle_expert_query,
-        inputs=[expert_question],
-        # The outputs must be a list in the same order as the keys in the returned dict
-        outputs=[
-            expert_results_group,
-            expert_df_output,
-            expert_query_details_accordion,
-            expert_final_answer_md,
-            expert_code_explanation_row,
-            expert_code_output,
-            expert_explanation_output
+    def generate_html(self,query:str,output):
+        prompt_template=PromptTemplate.from_template(HTML_TABLE_GENERATOR_TEMPLATE)
+        print("Started")
+        chain=prompt_template|self.llm|StrOutputParser()
+        start_time=time.time()
+        response=chain.invoke({"query":query,"schema":self.concise_schema,"output":output})
+        end_time=time.time()
+        print("Duration to get response: ",round(end_time-start_time,2))
+        print("Ended")
+        return response
+    def explain_code(self,code:str):
+        prompt_template=PromptTemplate.from_template(CODE_EXPLANATION_TEMPLATE)
+        print("Started")
+        chain=prompt_template|self.llm|StrOutputParser()
+        start_time=time.time()
+        response=chain.invoke({"code":code})
+        end_time=time.time()
+        print("Duration to get response: ",round(end_time-start_time,2))
+        print("Ended")
+        return response
+    def identify_intent(self,question:str):
+        prompt_template=PromptTemplate.from_template(INTENT_GENERATION_TEMPLATE)
+        print("Started")
+        chain=prompt_template|self.llm|StrOutputParser()
+        start_time=time.time()
+        response=chain.invoke({"query":question})
+        end_time=time.time()
+        print("Duration to get response: ",round(end_time-start_time,2))
+        print("Ended")
+        return response
+    def extract_entities(self,question:str):
+        prompt_template=PromptTemplate.from_template(EXTRACT_ENTITY_TEMPLATE)
+        print("Started")
+        chain=prompt_template|self.llm|StrOutputParser()
+        start_time=time.time()
+        response=chain.invoke({"question":question,"entity":entity})
+        end_time=time.time()
+        print("Duration to get response: ",round(end_time-start_time,2))
+        print("Ended")
+        return response
+    def run_query(self, question: str, max_retries: int = 2):
+        """
+        Runs the natural language to Cypher conversion with a self-correction loop.
+        """
+        start_time = time.time()
+        retries = 0
+        error_message = ""
+        generated_cypher = ""
+        intermediate_steps = []
+        #EXAMPLES
+        examples = [
+            { "question": "Find all classes in the repository 'exampleRepo'.", "query": "MATCH (r:Repository {name: 'exampleRepo'})-[:HAS_CLASSES]->(c:Class) RETURN c.name AS ClassName, c.file_path AS FilePath" },
+            { "question": "Which repositories depend on the 'core-library' repository?", "query": "MATCH (r:Repository)-[:DEPENDS_ON]->(:Repository {name: 'core-library'}) RETURN r.name AS DependentRepository" },
+            { "question": "List all methods in the 'UserService' class.", "query": "MATCH (:Class {name: 'UserService'})-[:HAS_METHOD]->(m:Method) RETURN m.name AS MethodName" },
+            { "question": "What stored procedures does the 'BillingProcessor' class call?", "query": "MATCH (:Class {name: 'BillingProcessor'})-[:CALLS_SP]->(sp:StoredProcedure) RETURN sp.name AS StoredProcedure" },
+            {"question":"What are the controllers in the 'api-getaway' repository?","query":"MATCH (r:Repository {name: 'api-gateway'})-[:HAS_CONTROLLER]->(c:Controller) RETURN c.name AS ControllerName, c.file_path AS FilePath"}
         ]
-    )
+        
+        # Format examples for injection into the prompt
+        example_text = "\n\n".join([f"Question: {ex['question']}\nCypher: {ex['query']}" for ex in examples])
 
-# --- 5. LAUNCH THE APP ---
-demo.launch(debug=True)
+        while retries < max_retries:
+            
+            correction_prompt = ""
+            if error_message:
+                correction_prompt = ERROR_CORRECTION_TEMPLATE.format(
+                    cypher_query=generated_cypher,
+                    error_message=error_message
+                )
+
+            # Generate the Cypher query
+            generated_cypher = self.cypher_chain.invoke({
+                "schema": self.concise_schema,
+                "examples": example_text,
+                "question": question,
+                "error_correction": correction_prompt
+            }).strip()
+
+            step_info = {
+                "attempt": retries + 1,
+                "cypher_query": generated_cypher
+            }
+
+            try:
+                # Execute the query
+                result = self.graph.query(generated_cypher)
+                end_time = time.time()
+                
+                step_info["status"] = "Success"
+                intermediate_steps.append(step_info)
+                
+                return {
+                    "question": question,
+                    "result": result,
+                    "intermediate_steps": intermediate_steps,
+                    "duration_seconds": round(end_time - start_time, 2),
+                }
+            except Exception as e:
+                # This is the self-correction part
+                retries += 1
+                error_message = str(e)
+                
+                step_info["status"] = "Failed"
+                step_info["error"] = error_message
+                intermediate_steps.append(step_info)
+
+        # If all retries fail
+        end_time = time.time()
+        return {
+            "question": question,
+            "result": f"Failed to execute a valid query after {max_retries} attempts. Last error: {error_message}",
+            "intermediate_steps": intermediate_steps,
+            "duration_seconds": round(end_time - start_time, 2),
+        }
+IGNORE_WHEN_COPYING_START
+content_copy
+download
+Use code with caution.
+Python
+IGNORE_WHEN_COPYING_END
