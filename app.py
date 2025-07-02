@@ -1,55 +1,16 @@
-Of course. Your manager's feedback is excellent and points to a crucial aspect of prompt engineering for graph databases. The LLM needs to know not just what nodes and relationships exist, but how they connect. Providing explicit relationship patterns is the key to improving query accuracy.
+Of course. Your manager's feedback is absolutely correct and hits on a critical point for making text-to-Cypher reliable. The LLM needs to see not just the names of relationships but the structure of how nodes are connected.
 
-I will make the one necessary change to your graph_query_handler.py file to address this. The change will be exclusively inside the get_concise_schema method, as you requested.
+You have provided the exact "ground truth" of your graph's structure. Instead of trying to dynamically discover this (which can be slow and sometimes unreliable), we can directly embed this known structure into the schema we provide to the LLM. This is a more robust and efficient solution.
 
-The Problem
-
-Your current get_concise_schema method lists node labels and relationship types separately.
-Current Schema Output:
-
-Generated code
-Node Labels:
-- Repository
-- Class
-- Controller
-Relationships:
-- HAS_CLASSES
-- HAS_ROUTES
-
-
-The LLM has to guess that the relationship is (Repository)-[:HAS_CLASSES]->(Class) and not, for example, (Controller)-[:HAS_CLASSES]->(Repository).
-
-The Solution
-
-We will modify get_concise_schema to query the database's schema visualization capabilities. This allows us to generate a list of explicit connection patterns, which is exactly what the LLM needs to see.
-
-New Schema Output:
-
-Generated code
-Node Labels:
-- Repository
-- Class
-- Controller
-
-Relationship Patterns:
-- (Repository)-[:HAS_CLASSES]->(Class)
-- (Repository)-[:HAS_ROUTES]->(Controller)
-... and so on
-IGNORE_WHEN_COPYING_START
-content_copy
-download
-Use code with caution.
-IGNORE_WHEN_COPYING_END
-
-This removes all guesswork for the LLM and will significantly improve the quality of the generated Cypher queries.
+I will modify only the get_concise_schema method in your graph_query_handler.py to reflect the explicit patterns you've described.
 
 Modified graph_query_handler.py
 
-Here is your file with the single, targeted change in the get_concise_schema method. No other part of the code has been altered.
+Here is your file with the single, targeted change. I have also corrected a few typos (lnagchain -> langchain) in your imports to ensure the code is runnable.
 
 Generated python
 import time
-# Corrected typo in langchain imports
+# Corrected typos in langchain imports
 from langchain_community.graphs import Neo4jGraph
 from langchain.prompts import PromptTemplate
 from langchain_community.llms import Ollama
@@ -184,43 +145,34 @@ class GraphQueryHandler:
     def extract_result_for_query(self,query)->str:
         return self.graph.query(query)
     
-    ### MODIFIED METHOD ###
+    ### MODIFIED METHOD AS PER YOUR MANAGER'S FEEDBACK ###
     def get_concise_schema(self) -> str:
         """
-        Generates a concise, summary schema focused on node labels and explicit 
-        relationship patterns to guide the LLM effectively.
+        Generates a concise, summary schema focused on node labels and explicit
+        relationship patterns to guide the LLM effectively. This uses a curated list
+        of known patterns for maximum accuracy and performance.
         """
-        # Fetch all unique node labels
+        # Fetch all unique node labels from the graph
         node_labels_query = "CALL db.labels() YIELD label RETURN label"
         node_labels_result = self.graph.query(node_labels_query)
         node_labels = [row['label'] for row in node_labels_result]
-        
-        # Fetch all relationship patterns
-        schema_query = "CALL db.schema.visualization()"
-        schema_result = self.graph.query(schema_query)
-        
-        # The result of the visualization query is a list containing one dictionary
-        if not schema_result:
-            return "Could not retrieve schema."
 
-        relationships = schema_result[0]['relationships']
-        
-        # Create a mapping from internal node ID to its primary label
-        nodes = schema_result[0]['nodes']
-        id_to_label = {node['id']: node['labels'][0] for node in nodes}
+        # Define the explicit relationship patterns based on your provided structure.
+        # This is more robust than trying to discover them dynamically.
+        relationship_patterns = [
+            "(Repository)-[:HAS_CLASSES]->(Class)",
+            "(Repository)-[:HAS_ROUTES]->(Controller)",
+            "(Repository)-[:DEPENDS_ON]->(Repository)",
+            "(Class)-[:HAS_METHOD]->(Method)",
+            "(Class)-[:CALLS_SP]->(StoredProcedure)",
+            "(Method)-[:HAS_VARIABLES]->(Variable)",
+            "(Method)-[:CALLS_METHOD]->(Method)",
+            "(Method)-[:RETURNS]->(Variable)" # Assuming RETURNS relationship points to a Variable/Type node
+        ]
 
-        # Use a set to store unique relationship patterns
-        relationship_patterns = set()
-        for rel in relationships:
-            start_node_label = id_to_label.get(rel['startNode'], 'Unknown')
-            end_node_label = id_to_label.get(rel['endNode'], 'Unknown')
-            rel_type = rel['type']
-            pattern = f"({start_node_label})-[:{rel_type}]->({end_node_label})"
-            relationship_patterns.add(pattern)
-
-        # Build the final schema string
+        # Build the final schema string for the prompt
         schema_str = "Node Labels:\n" + "- " + "\n- ".join(sorted(node_labels))
-        schema_str += "\n\nRelationship Patterns:\n" + "- " + "\n- ".join(sorted(list(relationship_patterns)))
+        schema_str += "\n\nRelationship Patterns:\n" + "- " + "\n- ".join(sorted(relationship_patterns))
         
         return schema_str
     ### END OF MODIFIED METHOD ###
@@ -339,9 +291,6 @@ class GraphQueryHandler:
             "intermediate_steps": intermediate_steps,
             "duration_seconds": round(end_time - start_time, 2),
         }
-IGNORE_WHEN_COPYING_START
-content_copy
-download
-Use code with caution.
-Python
-IGNORE_WHEN_COPYING_END
+
+
+This updated get_concise_schema method now produces a much richer and more explicit schema string for your prompt, which will directly lead to more accurate Cypher query generation by the LLM.
